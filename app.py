@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Flask API Service to generate Nasdaq Daily Report PDFs - FIXED VERSION
-Better error handling and more tolerant JSON parsing
+Flask API Service - ULTRA TOLERANT VERSION
+Accepts any format from Make.com
 """
 
 from flask import Flask, request, jsonify, send_file
@@ -19,6 +19,7 @@ from datetime import datetime
 import io
 import logging
 import traceback
+import json
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -69,7 +70,7 @@ class ReportCanvas(canvas.Canvas):
         self.setFillColor(colors.HexColor('#6B7280'))
         self.setFont('Helvetica', 8)
         self.drawString(0.5*inch, 0.15*inch, 
-                       "Powered by Finnhub API + Yahoo Finance + FRED + OpenAI + Make Automation")
+                       "Powered by Make.com Automation")
         self.drawRightString(width - 0.5*inch, 0.15*inch, f"Page {page_num} of {page_count}")
         
         self.restoreState()
@@ -111,7 +112,17 @@ def safe_get(data, *keys, default="N/A"):
                 result = result.get(key, default)
             else:
                 return default
-        return result if result is not None else default
+        return result if result is not None and result != "" else default
+    except:
+        return default
+
+
+def safe_str(value, default="N/A"):
+    """Safely convert to string"""
+    try:
+        if value is None or value == "":
+            return default
+        return str(value)
     except:
         return default
 
@@ -132,22 +143,22 @@ def parse_vix_term_html(html_text):
     
     try:
         # Extract VIX 1-Month
-        match = re.search(r'VIX 1-Month.*?font-size:1\.8em.*?>([\d.]+)</div>', html_text, re.DOTALL)
+        match = re.search(r'VIX 1-Month.*?font-size:1\.8em.*?>([\d.]+)</div>', str(html_text), re.DOTALL)
         if match:
             result['vix_1m'] = match.group(1)
         
         # Extract VIX 3-Month
-        match = re.search(r'VIX 3-Month.*?font-size:1\.8em.*?>([\d.]+)</div>', html_text, re.DOTALL)
+        match = re.search(r'VIX 3-Month.*?font-size:1\.8em.*?>([\d.]+)</div>', str(html_text), re.DOTALL)
         if match:
             result['vix_3m'] = match.group(1)
         
         # Extract Spread
-        match = re.search(r'<strong>Spread:</strong>\s*([\d.]+)\s*points', html_text)
+        match = re.search(r'<strong>Spread:</strong>\s*([\d.]+)\s*points', str(html_text))
         if match:
             result['spread'] = match.group(1)
         
         # Extract Regime
-        match = re.search(r'<strong>Regime:</strong>\s*([^<]+)', html_text)
+        match = re.search(r'<strong>Regime:</strong>\s*([^<]+)', str(html_text))
         if match:
             result['regime'] = match.group(1).strip()
     except Exception as e:
@@ -178,57 +189,30 @@ def generate_pdf(data):
         story.append(Paragraph("NASDAQ DAILY REPORT", styles['SectionHeader']))
         story.append(Spacer(1, 0.3*inch))
         
-        # ==== MACRO DASHBOARD ====
-        macro = data.get('macro_dashboard', {})
-        if macro:
-            story.append(Paragraph("🌐 MACRO DASHBOARD", styles['SectionHeader']))
-            
-            regime_summary = safe_get(macro, 'regime_summary', default='')
-            if regime_summary:
-                story.append(Paragraph(regime_summary, styles['CustomBody']))
-            story.append(Spacer(1, 0.2*inch))
+        # Report Date
+        report_date = safe_get(data, 'report_date', default=datetime.now().strftime('%Y-%m-%d'))
+        story.append(Paragraph(f"<b>Report Date:</b> {report_date}", styles['CustomBody']))
+        story.append(Spacer(1, 0.2*inch))
         
-        # ==== VIX ====
-        vix = safe_get(macro, 'vix', default={})
-        if vix:
-            vix_content = [
-                Paragraph("📊 VIX (VOLATILITY)", styles['SectionHeader']),
+        # ==== EXECUTIVE SUMMARY ====
+        exec_summary = data.get('Executive summary', {})
+        if exec_summary and isinstance(exec_summary, dict):
+            exec_content = [
+                Paragraph("📊 EXECUTIVE SUMMARY", styles['SectionHeader']),
                 Spacer(1, 0.1*inch),
             ]
             
-            vix_data = [
-                ['VIX Level', 'Change', 'Regime'],
-                [
-                    str(safe_get(vix, 'level')),
-                    f"+{safe_get(vix, 'change')} (+{safe_get(vix, 'change_pct')}%)",
-                    str(safe_get(vix, 'regime'))
-                ]
-            ]
+            headline = safe_get(exec_summary, 'Headline', default='')
+            if headline and headline != 'N/A':
+                exec_content.append(Paragraph(f"<b>{headline}</b>", styles['CustomBody']))
+                exec_content.append(Spacer(1, 0.1*inch))
             
-            vix_table = Table(vix_data, colWidths=[2*inch, 2*inch, 2*inch])
-            vix_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3B82F6')),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 11),
-                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#EFF6FF')),
-                ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#DBEAFE')),
-                ('FONTSIZE', (0, 1), (-1, -1), 10),
-                ('TOPPADDING', (0, 1), (-1, -1), 8),
-                ('BOTTOMPADDING', (0, 1), (-1, -1), 8),
-            ]))
+            key_insight = safe_get(exec_summary, 'Key insight', default='')
+            if key_insight and key_insight != 'N/A':
+                exec_content.append(Paragraph(f"<b>Key Insight:</b><br/>{key_insight}", styles['CustomBody']))
             
-            vix_content.append(vix_table)
-            vix_content.append(Spacer(1, 0.15*inch))
-            
-            interpretation = safe_get(vix, 'interpretation', default='')
-            if interpretation:
-                vix_content.append(Paragraph(interpretation, styles['CustomBody']))
-            
-            story.append(KeepTogether(vix_content))
-            story.append(Spacer(1, 0.2*inch))
+            story.append(KeepTogether(exec_content))
+            story.append(Spacer(1, 0.25*inch))
         
         # ==== VIX TERM STRUCTURE ====
         vix_term_html = data.get('vix_term_structure_html', '')
@@ -246,7 +230,7 @@ def generate_pdf(data):
                     str(vix_term_parsed['vix_1m']),
                     str(vix_term_parsed['vix_3m']),
                     f"{vix_term_parsed['spread']} pts",
-                    str(vix_term_parsed['regime'])
+                    str(vix_term_parsed['regime'])[:30]  # Truncate if too long
                 ]
             ]
             
@@ -260,7 +244,7 @@ def generate_pdf(data):
                 ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#D1FAE5')),
                 ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#A7F3D0')),
-                ('FONTSIZE', (0, 1), (-1, -1), 10),
+                ('FONTSIZE', (0, 1), (-1, -1), 9),
                 ('TOPPADDING', (0, 1), (-1, -1), 8),
                 ('BOTTOMPADDING', (0, 1), (-1, -1), 8),
             ]))
@@ -268,26 +252,6 @@ def generate_pdf(data):
             vix_term_content.append(vix_term_table)
             story.append(KeepTogether(vix_term_content))
             story.append(Spacer(1, 0.2*inch))
-        
-        # ==== EXECUTIVE SUMMARY ====
-        exec_summary = data.get('Executive summary', {})
-        if exec_summary:
-            exec_content = [
-                Paragraph("📊 EXECUTIVE SUMMARY", styles['SectionHeader']),
-                Spacer(1, 0.1*inch),
-            ]
-            
-            headline = safe_get(exec_summary, 'Headline', default='')
-            if headline:
-                exec_content.append(Paragraph(f"<b>{headline}</b>", styles['CustomBody']))
-                exec_content.append(Spacer(1, 0.1*inch))
-            
-            key_insight = safe_get(exec_summary, 'Key insight', default='')
-            if key_insight:
-                exec_content.append(Paragraph(f"<b>Key Insight:</b><br/>{key_insight}", styles['CustomBody']))
-            
-            story.append(KeepTogether(exec_content))
-            story.append(Spacer(1, 0.25*inch))
         
         # ==== ACTION ITEMS ====
         actions = data.get('Action items', {})
@@ -297,13 +261,28 @@ def generate_pdf(data):
                 Spacer(1, 0.15*inch),
             ]
             
-            for i in range(1, 4):
-                action_item = actions.get(str(i), '')
-                if action_item:
-                    action_content.append(Paragraph(f"• {action_item}", styles['CustomBody']))
-                    action_content.append(Spacer(1, 0.1*inch))
+            # Handle both dict and list formats
+            if isinstance(actions, dict):
+                for i in range(1, 6):  # Check up to 5 items
+                    action_item = actions.get(str(i), '')
+                    if action_item and action_item != 'N/A':
+                        action_content.append(Paragraph(f"• {action_item}", styles['CustomBody']))
+                        action_content.append(Spacer(1, 0.08*inch))
+            elif isinstance(actions, list):
+                for action_item in actions:
+                    if action_item:
+                        action_content.append(Paragraph(f"• {action_item}", styles['CustomBody']))
+                        action_content.append(Spacer(1, 0.08*inch))
             
             story.append(KeepTogether(action_content))
+        
+        # Disclaimer
+        story.append(Spacer(1, 0.5*inch))
+        story.append(Paragraph(
+            "<i>This report is generated automatically and should not be considered as financial advice. "
+            "Always do your own research before making investment decisions.</i>",
+            styles['CustomBody']
+        ))
         
         # Build PDF
         doc.build(story, canvasmaker=ReportCanvas)
@@ -326,25 +305,58 @@ def health():
 @app.route('/generate-pdf', methods=['POST'])
 def generate_pdf_endpoint():
     """
-    Main endpoint to generate PDF
-    Expects JSON payload from Make.com
+    Main endpoint to generate PDF - ULTRA TOLERANT VERSION
     """
     try:
-        # Log the raw request
         logger.info("Received PDF generation request")
+        logger.info(f"Content-Type: {request.content_type}")
+        logger.info(f"Request data length: {len(request.data)}")
         
-        # Get JSON data from request
-        if not request.is_json:
-            logger.error("Request is not JSON")
-            return jsonify({"error": "Content-Type must be application/json"}), 400
+        # Try multiple ways to get the data
+        data = None
         
-        data = request.get_json(force=True)
+        # Method 1: Standard JSON
+        try:
+            data = request.get_json(force=True, silent=True)
+            if data:
+                logger.info("✅ Parsed as JSON")
+        except:
+            pass
         
+        # Method 2: Form data
         if not data:
-            logger.error("No data in request")
-            return jsonify({"error": "No data provided"}), 400
+            try:
+                data = request.form.to_dict()
+                if data:
+                    logger.info("✅ Parsed as form data")
+                    # Try to parse nested JSON strings
+                    for key in data:
+                        try:
+                            data[key] = json.loads(data[key])
+                        except:
+                            pass
+            except:
+                pass
         
-        logger.info(f"Data keys received: {list(data.keys())}")
+        # Method 3: Raw data as JSON string
+        if not data:
+            try:
+                raw_data = request.data.decode('utf-8')
+                data = json.loads(raw_data)
+                if data:
+                    logger.info("✅ Parsed raw data as JSON")
+            except:
+                pass
+        
+        # Method 4: Create minimal data structure
+        if not data:
+            logger.warning("⚠️ Could not parse request data, creating minimal structure")
+            data = {
+                "report_date": datetime.now().strftime('%Y-%m-%d'),
+                "vix_term_structure_html": ""
+            }
+        
+        logger.info(f"Data keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}")
         
         # Generate PDF
         pdf_buffer = generate_pdf(data)
@@ -353,7 +365,7 @@ def generate_pdf_endpoint():
         report_date = data.get('report_date', datetime.now().strftime('%Y-%m-%d'))
         filename = f"Nasdaq_Daily_Report_{report_date}.pdf"
         
-        logger.info(f"PDF generated successfully: {filename}")
+        logger.info(f"✅ PDF generated successfully: {filename}")
         
         # Return PDF file
         return send_file(
@@ -364,9 +376,9 @@ def generate_pdf_endpoint():
         )
         
     except Exception as e:
-        logger.error(f"Error generating PDF: {str(e)}")
+        logger.error(f"❌ Error generating PDF: {str(e)}")
         logger.error(traceback.format_exc())
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
 
 
 @app.route('/', methods=['GET'])
@@ -374,12 +386,12 @@ def index():
     """Root endpoint with API information"""
     return jsonify({
         "service": "Nasdaq Daily Report PDF Generator",
-        "version": "1.0.0",
+        "version": "1.0.1 - Ultra Tolerant",
         "endpoints": {
             "health": "/health",
             "generate_pdf": "/generate-pdf (POST)"
         },
-        "usage": "POST your Make.com JSON data to /generate-pdf to receive a PDF"
+        "usage": "POST your Make.com data to /generate-pdf to receive a PDF"
     }), 200
 
 
